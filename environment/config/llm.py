@@ -1,96 +1,73 @@
 from openai import OpenAI
 from environment.config.config import config
 
+
 def get_client(model_prefix=None):
-    """Get OpenAI client with appropriate credentials based on model prefix"""
-    # Get model-specific API key and base URL if available, otherwise use defaults
-    if model_prefix and f"{model_prefix}_api_key" in config['llm']:
-        api_key = config['llm'][f"{model_prefix}_api_key"]
-        base_url = config['llm'][f"{model_prefix}_base_url"]
-    else:
-        api_key = config['llm']['api_key']
-        base_url = config['llm']['base_url']
-    
-    # Create and return client
+    """Return the unified DashScope OpenAI-compatible client.
+
+    VideoAgent's benchmark reproduction uses one DashScope endpoint/key for all
+    OpenAI-compatible LLM and VLM calls. ``model_prefix`` is accepted for
+    backwards-compatible call sites, but credential selection is intentionally
+    unified through ``dashscope_api_key`` and ``dashscope_base_url``.
+    """
+    llm_config = config.get("llm") or {}
+    api_key = llm_config.get("dashscope_api_key")
+    base_url = llm_config.get("dashscope_base_url")
+    if not api_key or not base_url:
+        raise RuntimeError(
+            "Missing DashScope config: set llm.dashscope_api_key and "
+            "llm.dashscope_base_url in environment/config/config.yml"
+        )
     return OpenAI(api_key=api_key, base_url=base_url)
 
-def deepseek(model="deepseek-v3", system=None, user=None, messages=None):
-    # Get client for deepseek
+
+def _build_messages(system=None, user=None, messages=None):
+    if messages is not None:
+        return messages
+    messages = []
+    if system is not None:
+        messages.append({"role": "system", "content": system})
+    if user is not None:
+        messages.append({"role": "user", "content": user})
+    return messages
+
+
+def deepseek(model="qwen3.7-max", system=None, user=None, messages=None):
     client = get_client("deepseek")
-    
-    if messages is not None:
-        pass
-    else:
-        messages = []
-        if system is not None:
-            messages.append({"role": "system", "content": system})
-        if user is not None:
-            messages.append({"role": "user", "content": user})
-
     response = client.chat.completions.create(
         model=model,
-        messages=messages,
+        messages=_build_messages(system=system, user=user, messages=messages),
         temperature=1,
-        response_format={"type": "json_object"}
+        response_format={"type": "json_object"},
     )
     return response
 
-def claude(model="claude-3-7-sonnet-20250219", system=None, user=None, messages=None):
-    # Get client for claude
+
+def claude(model="qwen3.7-max", system=None, user=None, messages=None):
     client = get_client("claude")
-    
-    if messages is not None:
-        pass
-    else:
-        messages = []
-        if system is not None:
-            messages.append({"role": "system", "content": system})
-        if user is not None:
-            messages.append({"role": "user", "content": user})
-
     response = client.chat.completions.create(
         model=model,
-        messages=messages,
-        temperature=1
+        messages=_build_messages(system=system, user=user, messages=messages),
+        temperature=1,
     )
     return response
 
-def gemini(model="gemini-2.5-flash", system=None, user=None, messages=None):
-    # Get client for gemini
+
+def gemini(model="qwen3.7-plus", system=None, user=None, messages=None):
     client = get_client("gemini")
-    
-    if messages is not None:
-        pass
-    else:
-        messages = []
-        if system is not None:
-            messages.append({"role": "system", "content": system})
-        if user is not None:
-            messages.append({"role": "user", "content": user})
-
     response = client.chat.completions.create(
         model=model,
-        messages=messages,
-        temperature=1
+        messages=_build_messages(system=system, user=user, messages=messages),
+        temperature=1,
     )
     return response
 
-def gpt(model="gpt-4o", system=None, user=None, messages=None):
-    # Get client for gpt
-    client = get_client("gpt")
-    
-    if messages is not None:
-        pass
-    else:
-        messages = []
-        if system is not None:
-            messages.append({"role": "system", "content": system})
-        if user is not None:
-            messages.append({"role": "user", "content": user})
 
+def gpt(model="qwen3.7-max", system=None, user=None, messages=None):
+    client = get_client("gpt")
     response = client.chat.completions.create(
         model=model,
-        messages=messages,
-        temperature=1
+        messages=_build_messages(system=system, user=user, messages=messages),
+        temperature=1,
     )
     return response
