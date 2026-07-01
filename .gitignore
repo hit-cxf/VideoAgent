@@ -1,0 +1,56 @@
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local configuration and secrets
+.env
+.env.*
+*.local.yml
+*.local.yaml
+environment/config/config.local.yml
+environment/config/user.local.yml
+
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# MoviePy / ffmpeg temporary files
+*TEMP_MPY*.mp3
+*TEMP_MPY*.wav
+*TEMP_MPY*.mp4
+*.log
+
+# VideoAgent runtime data and generated media
+dataset/final.mp4
+dataset/video_edit/audio_source/
+dataset/video_edit/video_source/
+dataset/video_edit/audio_analysis/
+dataset/video_edit/scene_output/
+dataset/video_edit/video_output/
+dataset/video_edit/writing_data/
+dataset/video_edit/videosource-workdir/
+dataset/videoagent_adapter_sources/
+dataset/videoagent_adapter_cache/
+
+# Large model/data outputs from bundled tools
+tools/DiffSinger/data/processed/
+tools/DiffSinger/checkpoints/
+tools/DiffSinger/work_dir/
+tools/.checkpoints/
+tools/whisper*/
+tools/**/.cache/
