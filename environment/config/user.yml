@@ -1,6 +1,0 @@
-#user:
-#  reqs: 我将提供给你一个音乐MP4，我希望你进行歌词的改编，以及用我指定的音色克隆，并且用我给的视频素材制作一个全新的音乐视频
-
-# TTS
-reqs: |
-  I would like you to adapt the content of a video with the following specific requirements:
