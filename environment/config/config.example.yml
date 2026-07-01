@@ -1,0 +1,4 @@
+llm:
+  # DashScope OpenAI-compatible endpoint used by VideoAgent LLM/VLM calls.
+  dashscope_api_key: ""
+  dashscope_base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"

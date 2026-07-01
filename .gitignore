@@ -54,3 +54,6 @@ tools/DiffSinger/work_dir/
 tools/.checkpoints/
 tools/whisper*/
 tools/**/.cache/
+environment/config/config.yml
+environment/config/user.yml
+!environment/config/config.example.yml
