@@ -316,6 +316,17 @@ def load_and_transform_video_data(
     )
     frame_sampler = pv_transforms.UniformTemporalSubsample(num_samples=clip_duration)
 
+    def ensure_torch_video(video_clip):
+        if isinstance(video_clip, torch.Tensor):
+            return video_clip
+        if hasattr(video_clip, "asnumpy"):
+            video_clip = video_clip.asnumpy()
+        video_clip = torch.as_tensor(video_clip)
+        # decord may return T,H,W,C while pytorchvideo transforms expect C,T,H,W.
+        if video_clip.ndim == 4 and video_clip.shape[-1] in (1, 3, 4):
+            video_clip = video_clip.permute(3, 0, 1, 2)
+        return video_clip
+
     def load_one_video(video_path):
         local_clip_sampler = ConstantClipsPerVideoSampler(
             clip_duration=clip_duration, clips_per_video=clips_per_video
@@ -336,7 +347,8 @@ def load_and_transform_video_data(
             clip = video.get_clip(clip_timepoints[0], clip_timepoints[1])
             if clip is None:
                 raise ValueError("No clip found")
-            video_clip = local_frame_sampler(clip["video"])
+            video_clip = ensure_torch_video(clip["video"])
+            video_clip = local_frame_sampler(video_clip)
             video_clip = video_clip / 255.0  # since this is float, need 0-1
 
             all_video.append(video_clip)
