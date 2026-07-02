@@ -1,6 +1,7 @@
 import os
 import time
 import shutil
+import subprocess
 import numpy as np
 from tqdm import tqdm
 from moviepy.video import fx as vfx
@@ -95,13 +96,38 @@ def saving_video_segments(
     video_output_format='mp4',
 ):
     try:
-        with VideoFileClip(video_path) as video:
-            video_segment_cache_path = os.path.join(working_dir, '_cache', video_name)
-            for index in tqdm(segment_index2name, desc=f"Saving Video Segments {video_name}"):
-                start, end = segment_times_info[index]["timestamp"][0], segment_times_info[index]["timestamp"][1]
-                video_file = f'{segment_index2name[index]}.{video_output_format}'
-                subvideo = video.subclip(start, end)
-                subvideo.write_videofile(os.path.join(video_segment_cache_path, video_file), codec='libx264', verbose=False, logger=None)
+        video_segment_cache_path = os.path.join(working_dir, '_cache', video_name)
+        for index in tqdm(segment_index2name, desc=f"Saving Video Segments {video_name}"):
+            start, end = segment_times_info[index]["timestamp"][0], segment_times_info[index]["timestamp"][1]
+            duration = max(0, end - start)
+            video_file = f'{segment_index2name[index]}.{video_output_format}'
+            output_path = os.path.join(video_segment_cache_path, video_file)
+
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                f"{start:.6f}",
+                "-i",
+                video_path,
+                "-t",
+                f"{duration:.6f}",
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
+                "-c",
+                "copy",
+                "-avoid_negative_ts",
+                "make_zero",
+                "-reset_timestamps",
+                "1",
+                output_path,
+            ]
+            subprocess.run(cmd, check=True)
     except Exception as e:
         error_queue.put(f"Error in saving_video_segments:\n {str(e)}")
         raise RuntimeError

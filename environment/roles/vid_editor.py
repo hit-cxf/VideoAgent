@@ -5,6 +5,7 @@ import base64
 import io
 from moviepy.editor import VideoFileClip, concatenate_videoclips, AudioFileClip, CompositeAudioClip
 from typing import List, Dict, Tuple, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import math
 import tempfile
@@ -15,6 +16,8 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 from environment.config.llm import gemini
 from pydantic import BaseModel, Field
 from environment.agents.base import BaseTool
+
+EDITOR_VLM_CONCURRENCY = 50
 
 class VideoEditor(BaseTool):
     """
@@ -78,8 +81,9 @@ class VideoEditor(BaseTool):
         retry=retry_if_exception_type((Exception,)),
         reraise=True
     )
-    def _call_api(self, prompt: str) -> str:
+    def _call_api(self, prompt: str, log_prefix: str = "") -> str:
         """Call API with retry logic"""
+        prefix = f"{log_prefix} " if log_prefix else ""
         try:
             response = gemini(
                 user=prompt
@@ -91,15 +95,16 @@ class VideoEditor(BaseTool):
             else:
                 response_text = str(response).strip()
             
-            print(f"API call successful")
+            print(f"{prefix}API call successful")
             return response_text
             
         except Exception as e:
-            print(f"API call failed: {str(e)}")
+            print(f"{prefix}API call failed: {str(e)}")
             raise e
 
-    def _analyze_frames(self, frames: List[Image.Image], description: str, exact_duration: float) -> int:
+    def _analyze_frames(self, frames: List[Image.Image], description: str, exact_duration: float, log_prefix: str = "") -> int:
         """Use API to analyze frames and select the best starting frame"""
+        prefix = f"{log_prefix} " if log_prefix else ""
         try:
             # Create multimodal content array
             content = [
@@ -142,28 +147,36 @@ class VideoEditor(BaseTool):
             else:
                 response_text = str(response).strip()
             
-            print(f"API call successful")
+            print(f"{prefix}API call successful")
             
             # Extract frame number from response
             frame_numbers = re.findall(r'\d+', response_text)
             if not frame_numbers:
-                print("No frame number found in response, using 0")
+                print(f"{prefix}No frame number found in response, using 0")
                 return 0
                 
             frame_number = int(frame_numbers[0])
             max_start_frame = len(frames) - math.ceil(exact_duration)
             
             if 0 <= frame_number <= max_start_frame:
-                print(f"Selected frame {frame_number} from response")
+                print(f"{prefix}Selected frame {frame_number} from response")
                 return frame_number
             else:
-                print(f"Frame number {frame_number} out of bounds (max: {max_start_frame}), using 0")
+                print(f"{prefix}Frame number {frame_number} out of bounds (max: {max_start_frame}), using 0")
                 return 0
                 
         except Exception as e:
-            print(f"Error in Gemini analysis: {str(e)}")
-            print("Falling back to frame 0")
+            print(f"{prefix}Error in Gemini analysis: {str(e)}")
+            print(f"{prefix}Falling back to frame 0")
             return 0  # Fallback to first frame
+
+    def _job_log_prefix(self, job: Dict) -> str:
+        return (
+            f"[Period {job['index'] + 1}]"
+            f"[{job['segment_name']}]"
+            f"[BGM {job['period_start']:.3f}-{job['period_end']:.3f}s]"
+            f"[SRC {job['segment_start']:.3f}-{job['segment_end']:.3f}s]"
+        )
 
     def _load_data(self):
         """Load video segments and timing data"""
@@ -341,14 +354,18 @@ class VideoEditor(BaseTool):
             max_periods = min(len(time_periods), len(storyboard_sections))
             print(f"Will process {max_periods} periods (limited by storyboard sections)")
 
-            # Process each time period
+            analysis_jobs = []
+
+            # Collect frames and metadata for each time period. VLM frame selection
+            # is batched below; video clipping remains ordered and serial.
             for j in range(max_periods):
                 period_start, period_end = time_periods[j]
                 exact_duration = period_end - period_start
-                print(f"\nProcessing time period {j+1}: {period_start:.3f}s - {period_end:.3f}s (Duration: {exact_duration:.3f}s)")
+                period_prefix = f"[Period {j + 1}][BGM {period_start:.3f}-{period_end:.3f}s]"
+                print(f"\n{period_prefix} Processing time period (Duration: {exact_duration:.3f}s)")
 
                 if not self.video_segments:
-                    print("No video segments available")
+                    print(f"{period_prefix} No video segments available")
                     break
 
                 segment_idx = j % len(self.video_segments)
@@ -356,30 +373,37 @@ class VideoEditor(BaseTool):
 
                 try:
                     segment_start, segment_end = self._load_video_timing(segment_name)
+                    segment_prefix = (
+                        f"[Period {j + 1}]"
+                        f"[{segment_name}]"
+                        f"[BGM {period_start:.3f}-{period_end:.3f}s]"
+                        f"[SRC {segment_start:.3f}-{segment_end:.3f}s]"
+                    ) if segment_start is not None and segment_end is not None else f"{period_prefix}[{segment_name}]"
+
                     if segment_start is None or segment_end is None:
-                        print(f"Skipping segment {segment_name} - invalid timing")
+                        print(f"{segment_prefix} Skipping segment - invalid timing")
                         continue
 
-                    print(f"Checking segment: {segment_name}")
-                    print(f"Segment range: {segment_start:.3f}s - {segment_end:.3f}s")
+                    print(f"{segment_prefix} Checking segment")
+                    print(f"{segment_prefix} Segment range ready")
 
                     # Validate segment duration
                     max_start = segment_end - exact_duration
                     if max_start < segment_start:
-                        print(f"Segment too short for required duration {exact_duration:.3f}s")
+                        print(f"{segment_prefix} Segment too short for required duration {exact_duration:.3f}s")
                         continue
 
                     if j >= len(storyboard_sections):
-                        print(f"Not enough storyboard sections for period {j+1}")
+                        print(f"{segment_prefix} Not enough storyboard sections")
                         break
 
                     current_section = storyboard_sections[j]
                     description = '\n'.join(current_section.split('\n')[1:]).strip()
-                    print(f"Using storyboard section {j + 1}")
+                    print(f"{segment_prefix} Using storyboard section {j + 1}")
 
                     video_path = self._get_video_path(segment_name)
                     if not os.path.exists(video_path):
-                        print(f"Video file not found: {video_path}")
+                        print(f"{segment_prefix} Video file not found: {video_path}")
                         continue
 
                     # Load with audio if we're keeping original audio
@@ -387,35 +411,88 @@ class VideoEditor(BaseTool):
                         frames_with_times = self._extract_frames(temp_video, segment_start, segment_end)
 
                     if not frames_with_times:
-                        print("No frames extracted")
+                        print(f"{segment_prefix} No frames extracted")
                         continue
 
-                    print(f"Extracted {len(frames_with_times)} frames for analysis")
+                    print(f"{segment_prefix} Extracted {len(frames_with_times)} frames for analysis")
 
                     timestamps = [t for t, _ in frames_with_times]
                     frames = [f for _, f in frames_with_times]
 
-                    print("Analyzing frames with Gemini...")
-                    frame_number = self._analyze_frames(frames, description, exact_duration)
-                    
-                    # Add a small delay between API calls to avoid rate limiting
-                    time.sleep(1)
+                    analysis_jobs.append({
+                        "index": j,
+                        "segment_name": segment_name,
+                        "video_path": video_path,
+                        "period_start": period_start,
+                        "period_end": period_end,
+                        "segment_start": segment_start,
+                        "segment_end": segment_end,
+                        "exact_duration": exact_duration,
+                        "description": description,
+                        "frames": frames,
+                        "frame_count": len(frames),
+                    })
+
+                except Exception as e:
+                    print(f"{period_prefix}[{segment_name}] Error preparing segment: {e}")
+                    continue
+
+            if not analysis_jobs:
+                print("No valid frame-analysis jobs to process")
+                return {
+                    "output_path": ""
+                }
+
+            print(f"\nAnalyzing {len(analysis_jobs)} frame jobs with Gemini (concurrency={EDITOR_VLM_CONCURRENCY})...")
+
+            def run_analysis(job):
+                log_prefix = self._job_log_prefix(job)
+                print(f"{log_prefix} FrameAnalysis start")
+                frame_number = self._analyze_frames(
+                    job["frames"],
+                    job["description"],
+                    job["exact_duration"],
+                    log_prefix=log_prefix,
+                )
+                print(f"{log_prefix} FrameAnalysis selected frame {frame_number}")
+                return job["index"], frame_number
+
+            frame_results = {}
+            with ThreadPoolExecutor(max_workers=EDITOR_VLM_CONCURRENCY) as executor:
+                futures = [executor.submit(run_analysis, job) for job in analysis_jobs]
+                for future in as_completed(futures):
+                    try:
+                        job_index, frame_number = future.result()
+                        frame_results[job_index] = frame_number
+                    except Exception as e:
+                        print(f"[FrameAnalysis] Unexpected error: {e}")
+
+            # Create clips in original timeline order.
+            for job in sorted(analysis_jobs, key=lambda item: item["index"]):
+                try:
+                    j = job["index"]
+                    frame_number = frame_results.get(j, 0)
+                    segment_start = job["segment_start"]
+                    exact_duration = job["exact_duration"]
+                    video_path = job["video_path"]
+                    frame_count = job["frame_count"]
+                    log_prefix = self._job_log_prefix(job)
 
                     clip_start = segment_start + frame_number  # Start from frame_number seconds into segment
                     clip_end = clip_start + exact_duration
-                    print(f"Selected clip: Starting from frame {frame_number} of {len(frames)-1}")
-                    print(f"Precise timing: {clip_start:.3f}s - {clip_end:.3f}s")
+                    print(f"{log_prefix} Selected clip: starting from frame {frame_number} of {frame_count - 1}")
+                    print(f"{log_prefix} Precise timing: {clip_start:.3f}s - {clip_end:.3f}s")
 
                     # Create clip with precise timing - now loading with audio based on keep_original_audio
                     clip = VideoFileClip(video_path, audio=keep_original_audio).subclip(clip_start, clip_end)
                     final_clips.append(clip)
 
                     total_duration += clip.duration
-                    print(f"Added clip: Duration = {clip.duration:.3f}s")
-                    print(f"Current total duration: {total_duration:.3f}s")
+                    print(f"{log_prefix} Added clip: Duration = {clip.duration:.3f}s")
+                    print(f"{log_prefix} Current total duration: {total_duration:.3f}s")
 
                 except Exception as e:
-                    print(f"Error processing segment {segment_name}: {e}")
+                    print(f"{self._job_log_prefix(job)} Error creating clip: {e}")
                     continue
 
             if not final_clips:

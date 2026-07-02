@@ -50,7 +50,7 @@ class VideoRAG:
     rough_num_frames_per_segment: int = 3 # 5 frames
     video_output_format: str = "mp4"
     audio_output_format: str = "mp3"
-    video_embedding_batch_num: int = 2
+    video_embedding_batch_num: int = 8
     segment_retrieval_top_k: int = 30
     video_embedding_dim: int = 1024
     

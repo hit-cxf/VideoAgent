@@ -7,7 +7,9 @@
 
 import logging
 import math
+import os
 import pkg_resources
+from concurrent.futures import ThreadPoolExecutor
 
 import torch
 import torch.nn as nn
@@ -22,6 +24,7 @@ from torchvision.transforms._transforms_video import NormalizeVideo
 from imagebind.models.multimodal_preprocessors import SimpleTokenizer
 
 DEFAULT_AUDIO_FRAME_SHIFT_MS = 10  # in milliseconds
+DEFAULT_VIDEO_PREPROCESS_CONCURRENCY = 8
 
 
 def return_bpe_path():
@@ -313,7 +316,11 @@ def load_and_transform_video_data(
     )
     frame_sampler = pv_transforms.UniformTemporalSubsample(num_samples=clip_duration)
 
-    for video_path in video_paths:
+    def load_one_video(video_path):
+        local_clip_sampler = ConstantClipsPerVideoSampler(
+            clip_duration=clip_duration, clips_per_video=clips_per_video
+        )
+        local_frame_sampler = pv_transforms.UniformTemporalSubsample(num_samples=clip_duration)
         video = EncodedVideo.from_path(
             video_path,
             decoder="decord",
@@ -321,7 +328,7 @@ def load_and_transform_video_data(
             **{"sample_rate": sample_rate},
         )
 
-        all_clips_timepoints = get_clip_timepoints(clip_sampler, video.duration)
+        all_clips_timepoints = get_clip_timepoints(local_clip_sampler, video.duration)
 
         all_video = []
         for clip_timepoints in all_clips_timepoints:
@@ -329,7 +336,7 @@ def load_and_transform_video_data(
             clip = video.get_clip(clip_timepoints[0], clip_timepoints[1])
             if clip is None:
                 raise ValueError("No clip found")
-            video_clip = frame_sampler(clip["video"])
+            video_clip = local_frame_sampler(clip["video"])
             video_clip = video_clip / 255.0  # since this is float, need 0-1
 
             all_video.append(video_clip)
@@ -337,7 +344,17 @@ def load_and_transform_video_data(
         all_video = [video_transform(clip) for clip in all_video]
         all_video = SpatialCrop(224, num_crops=3)(all_video)
 
-        all_video = torch.stack(all_video, dim=0)
-        video_outputs.append(all_video)
+        return torch.stack(all_video, dim=0)
+
+    preprocess_workers = int(
+        os.environ.get("IMAGEBIND_VIDEO_PREPROCESS_CONCURRENCY", DEFAULT_VIDEO_PREPROCESS_CONCURRENCY)
+    )
+    preprocess_workers = max(1, min(preprocess_workers, len(video_paths)))
+
+    if preprocess_workers == 1:
+        video_outputs = [load_one_video(video_path) for video_path in video_paths]
+    else:
+        with ThreadPoolExecutor(max_workers=preprocess_workers) as executor:
+            video_outputs = list(executor.map(load_one_video, video_paths))
 
     return torch.stack(video_outputs, dim=0).to(device)

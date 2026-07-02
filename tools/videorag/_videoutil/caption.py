@@ -1,6 +1,7 @@
 import os
 import base64
 import io
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
@@ -33,23 +34,15 @@ def frames_to_description(video_frames):
         })
     return frame_data
 
-def segment_caption(video_name, video_path, segment_index2name, transcripts, segment_times_info, caption_result, error_queue):
-    try:
-        with VideoFileClip(video_path) as video:
-            for index in tqdm(segment_index2name, desc=f"Captioning Video {video_name}"):
-                frame_times = segment_times_info[index]["frame_times"]
-                video_frames = encode_video(video, frame_times)
-                
-                # Get frame data with base64 images
-                frame_data = frames_to_description(video_frames)
-                
-                transcript_context = transcripts[index] if transcripts[index].strip() else "No transcript available"
-                
-                # Create content array with text and images
-                content = [
-                    {
-                        "type": "text",
-                        "text": f"""You are analyzing a video segment. Here's the available information:
+CAPTION_API_CONCURRENCY = 50
+
+
+def build_caption_content(transcript_context, video_frames):
+    frame_data = frames_to_description(video_frames)
+    content = [
+        {
+            "type": "text",
+            "text": f"""You are analyzing a video segment. Here's the available information:
 
                 Transcript: {transcript_context}
                 
@@ -66,31 +59,53 @@ def segment_caption(video_name, video_path, segment_index2name, transcripts, seg
                 
                 A bustling city street with people walking, cars passing by, and tall buildings in the background. The scene captures the energy of urban life with pedestrians crossing the road, cyclists navigating through traffic.
                 """
-                    }
-                ]
-                
-                # Add each frame as an image input
-                for frame_info in frame_data:
-                    content.append({
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{frame_info['image_data']}"
-                        }
-                    })
+        }
+    ]
+    for frame_info in frame_data:
+        content.append({
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:image/jpeg;base64,{frame_info['image_data']}"
+            }
+        })
+    return content
 
-                try:
-                    response = gemini(
-                        user=content  # Send the content array with text + images
-                    )
-                    
-                    segment_caption_text = response.choices[0].message.content
-                    caption_result[index] = segment_caption_text.replace("\n", "").replace("<|endoftext|>", "")
-                    
-                except Exception as api_error:
-                    print(f"Gemini API error for segment {index}: {str(api_error)}")
-                    fallback_caption = f"Video segment containing: {transcript_context}" if transcript_context != "No transcript available" else "Video segment with visual content"
-                    caption_result[index] = fallback_caption
-                    
+
+def request_caption(index, content, transcript_context):
+    try:
+        response = gemini(user=content)
+        segment_caption_text = response.choices[0].message.content
+        return index, segment_caption_text.replace("\n", "").replace("<|endoftext|>", "")
+    except Exception as api_error:
+        print(f"Gemini API error for segment {index}: {str(api_error)}")
+        fallback_caption = (
+            f"Video segment containing: {transcript_context}"
+            if transcript_context != "No transcript available"
+            else "Video segment with visual content"
+        )
+        return index, fallback_caption
+
+
+def segment_caption(video_name, video_path, segment_index2name, transcripts, segment_times_info, caption_result, error_queue):
+    try:
+        caption_jobs = []
+        with VideoFileClip(video_path) as video:
+            for index in tqdm(segment_index2name, desc=f"Preparing captions {video_name}"):
+                frame_times = segment_times_info[index]["frame_times"]
+                video_frames = encode_video(video, frame_times)
+                transcript_context = transcripts[index] if transcripts[index].strip() else "No transcript available"
+                content = build_caption_content(transcript_context, video_frames)
+                caption_jobs.append((index, content, transcript_context))
+
+        with ThreadPoolExecutor(max_workers=CAPTION_API_CONCURRENCY) as executor:
+            futures = [
+                executor.submit(request_caption, index, content, transcript_context)
+                for index, content, transcript_context in caption_jobs
+            ]
+            for future in tqdm(as_completed(futures), total=len(futures), desc=f"Captioning Video {video_name}"):
+                index, caption_text = future.result()
+                caption_result[index] = caption_text
+
     except Exception as e:
         error_queue.put(f"Error in segment_caption:\n {str(e)}")
         raise RuntimeError

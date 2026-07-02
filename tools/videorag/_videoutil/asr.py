@@ -42,7 +42,7 @@ def speech_to_text(video_name, working_dir, segment_index2name, audio_output_for
         feature_extractor=processor.feature_extractor,
         max_new_tokens=128,
         chunk_length_s=30,
-        batch_size=16,
+        batch_size=64,
         return_timestamps=True,
         torch_dtype=torch_dtype,
         device=device,
